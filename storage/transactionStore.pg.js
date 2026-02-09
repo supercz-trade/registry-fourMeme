@@ -1,8 +1,23 @@
 // storage/transactionStore.pg.js
-// [NEW] PostgreSQL version
+// FINAL — PostgreSQL version
 // SOURCE OF TRUTH
+// FIXED: time normalization (ALWAYS unix seconds)
 
 import { pool } from "../db/postgres.js";
+
+/**
+ * Normalize time to UNIX SECONDS
+ * Accepts seconds or milliseconds
+ */
+function normalizeTime(t) {
+  if (!t) return Math.floor(Date.now() / 1000);
+
+  // if milliseconds
+  if (t > 1e12) return Math.floor(t / 1000);
+
+  // already seconds
+  return Math.floor(t);
+}
 
 /**
  * Save transaction events (append-only)
@@ -13,6 +28,8 @@ export async function saveTransactions(tokenAddress, events = []) {
 
   for (const e of events) {
     if (!e?.txHash || !e.wallet || !e.type || !e.side) continue;
+
+    const timeSec = normalizeTime(e.time);
 
     await pool.query(
       `
@@ -47,7 +64,7 @@ export async function saveTransactions(tokenAddress, events = []) {
         e.baseTokenPriceUSD ?? null,
         e.priceUSD ?? null,
         e.marketcapAtTxUSD ?? null,
-        Number(e.time ?? Date.now())
+        timeSec
       ]
     );
   }

@@ -1,8 +1,24 @@
+# ================= DEPENDENCIES =================
 node_modules/
+
+# ================= ENV =================
 .env
 .env.*
+
+# ================= LOGS =================
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# ================= BUILD =================
 dist/
 build/
+
+# ================= RUNTIME / LOCAL =================
+sniffer_logs/
+sniffer_logs_gmgn/
+
+# ================= TEST / TEMP =================
+test.js
+sniffeApi.js
+cookies.js

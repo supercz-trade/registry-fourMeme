@@ -1,11 +1,9 @@
 // monitoring/detectBuySell.js
-// FINAL VERSION — TRADE EVENT PRODUCER
-// - Unified schema with genesisTx
-// - One event = one trade (BUY / SELL)
-// - Safe for transaction / holder / candle replay
+// FINAL — TRADE EVENT PRODUCER (ONCHAIN, CLEAN, HELPER-AWARE)
 
 import { ethers } from "ethers";
 import { getPairPriceUSD } from "../price/pairPriceCache.js";
+import { resolveBondingPrice } from "../services/helper.js";
 
 const TRANSFER_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -13,7 +11,6 @@ const TRANSFER_TOPIC =
 const TOKEN_DECIMALS = 18;
 const TOTAL_SUPPLY = 1_000_000_000;
 
-// SAME whitelist as createToken
 const PAIR_WHITELIST = {
   "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d": { symbol: "USD1", decimals: 18, stable: true },
   "0x55d398326f99059ff775485246999027b3197955": { symbol: "USDT", decimals: 18, stable: true },
@@ -22,18 +19,11 @@ const PAIR_WHITELIST = {
   "0x000ae314e2a2172a039b26378814c252734f556a": { symbol: "ASTER", decimals: 18, stable: false }
 };
 
-// ================= HELPERS =================
 function addrFromTopic(topic) {
   return "0x" + topic.slice(26);
 }
 
-function normalizeBNB(raw) {
-  if (raw < 0.011) return raw * 0.99;
-  return raw * 0.99;
-}
-
-// ================= MAIN =================
-export function detectBuySell({
+export async function detectBuySell({
   tx,
   receipt,
   tokenAddress,
@@ -43,19 +33,18 @@ export function detectBuySell({
   bnbUSD
 }) {
   const events = [];
-
-  if (!tx || !receipt || !tokenAddress) return events;
+  if (!tx || !receipt) return events;
 
   const tokenAddr = tokenAddress.toLowerCase();
   const managerAddr = manager.toLowerCase();
   const creatorAddr = creator?.toLowerCase() ?? null;
 
-  // ================= PAIR SPEND DETECTION =================
+  // ================= PAIR SPEND =================
   let pairSpend = {
     symbol: "BNB",
-    address: null,
     amount: 0,
-    stable: false
+    stable: false,
+    address: null
   };
 
   for (const log of receipt.logs) {
@@ -68,43 +57,25 @@ export function detectBuySell({
       const meta = PAIR_WHITELIST[addr];
       pairSpend = {
         symbol: meta.symbol,
-        address: addr,
-        amount: Number(
-          ethers.formatUnits(BigInt(log.data), meta.decimals)
-        ),
-        stable: meta.stable
+        amount: Number(ethers.formatUnits(BigInt(log.data), meta.decimals)),
+        stable: meta.stable,
+        address: addr
       };
     }
   }
 
   // ================= SPEND USD =================
   let spendUSD = 0;
-  let baseTokenPriceUSD = null;
 
   if (!pairSpend.address) {
-    // Native BNB
-    const rawBNB = Number(ethers.formatEther(tx.value));
-    const bnbAmount = normalizeBNB(rawBNB);
-
-    pairSpend.amount = bnbAmount;
+    const bnbAmount = Number(ethers.formatEther(tx.value));
     spendUSD = bnbAmount * bnbUSD;
-    baseTokenPriceUSD = bnbUSD;
-
   } else if (pairSpend.stable) {
-    // Stablecoin
     spendUSD = pairSpend.amount;
-    baseTokenPriceUSD = 1;
-
   } else {
-    // Volatile ERC20
     const px = getPairPriceUSD(pairSpend.symbol);
-    if (!px) return events;
-
-    spendUSD = pairSpend.amount * px;
-    baseTokenPriceUSD = px;
+    if (px) spendUSD = pairSpend.amount * px;
   }
-
-  if (spendUSD <= 0) return events;
 
   // ================= TOKEN FLOW =================
   for (const log of receipt.logs) {
@@ -117,63 +88,55 @@ export function detectBuySell({
     const tokenAmount = Number(
       ethers.formatUnits(BigInt(log.data), TOKEN_DECIMALS)
     );
-
     if (tokenAmount <= 0) continue;
 
-    const priceUSD = spendUSD / tokenAmount;
-    const marketcapUSD = priceUSD * TOTAL_SUPPLY;
+    const side =
+      from === managerAddr ? "BUY" :
+      to === managerAddr ? "SELL" : null;
 
-    // ================= BUY =================
-    if (from === managerAddr && to !== managerAddr) {
-      events.push({
-        type: "TRADE",
-        side: "BUY",
+    if (!side) continue;
 
-        txHash: tx.hash,
-        tokenAddress: tokenAddr,
-        wallet: to,
-        isDev: creatorAddr ? to === creatorAddr : false,
+    // ================= PRICE RESOLUTION =================
+    let priceUSD = null;
+    let marketcapUSD = null;
+    let priceSource = null;
 
-        tokenAmount,
-
-        spendAmount: pairSpend.amount,
-        spendSymbol: pairSpend.symbol,
-        spendUSD,
-
-        baseTokenPriceUSD,
-
-        priceUSD,
-        marketcapAtTxUSD: marketcapUSD,
-
-        time: blockTime
-      });
+    // PRIORITY 1: PAIR (BUY only)
+    if (side === "BUY" && spendUSD > 0) {
+      priceUSD = spendUSD / tokenAmount;
+      marketcapUSD = priceUSD * TOTAL_SUPPLY;
+      priceSource = "PAIR";
     }
 
-    // ================= SELL =================
-    else if (to === managerAddr && from !== managerAddr) {
-      events.push({
-        type: "TRADE",
-        side: "SELL",
+    // PRIORITY 2: HELPER (BUY & SELL if spendUSD === 0)
+    if (priceUSD === null && spendUSD === 0) {
+      const helperRes = await resolveBondingPrice(tokenAddr, bnbUSD);
 
-        txHash: tx.hash,
-        tokenAddress: tokenAddr,
-        wallet: from,
-        isDev: creatorAddr ? from === creatorAddr : false,
-
-        tokenAmount,
-
-        spendAmount: pairSpend.amount,
-        spendSymbol: pairSpend.symbol,
-        spendUSD,
-
-        baseTokenPriceUSD,
-
-        priceUSD,
-        marketcapAtTxUSD: marketcapUSD,
-
-        time: blockTime
-      });
+      if (helperRes && !helperRes.liquidityAdded) {
+        priceUSD = helperRes.priceUSD;
+        marketcapUSD = helperRes.marketcapUSD;
+        priceSource = helperRes.source; // HELPER3
+      }
     }
+
+    events.push({
+      type: "TRADE",
+      side,
+      txHash: tx.hash,
+      tokenAddress: tokenAddr,
+      wallet: side === "BUY" ? to : from,
+      isDev: creatorAddr
+        ? (side === "BUY" ? to === creatorAddr : from === creatorAddr)
+        : false,
+      tokenAmount,
+      spendAmount: pairSpend.amount || null,
+      spendSymbol: pairSpend.symbol || null,
+      spendUSD: spendUSD || null,
+      priceUSD,
+      marketcapAtTxUSD: marketcapUSD,
+      priceSource,
+      time: blockTime
+    });
   }
 
   return events;

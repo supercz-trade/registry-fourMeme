@@ -1,6 +1,7 @@
 // storage/tokenStore.pg.js
-// [NEW] PostgreSQL version of tokenStore
-// Replaces JSON-based token registry
+// FINAL — SuperCZ Token Registry (Postgres)
+// Supports native launch + migration
+// Engine-first, no UI assumption
 
 import { pool } from "../db/postgres.js";
 
@@ -10,7 +11,7 @@ function now() {
 
 /**
  * Save token registry info
- * Will NOT overwrite existing token (same behavior as JSON)
+ * WILL NOT overwrite existing token
  */
 export async function saveTokenLaunchInfo(registry) {
   if (!registry || !registry.tokenAddress) return;
@@ -56,7 +57,7 @@ export async function saveTokenLaunchInfo(registry) {
 
       registry.launchTxHash ?? null,
       registry.launchTime ?? null,
-      registry.launchSource ?? null,
+      registry.launchSource ?? "UNKNOWN",
 
       registry.baseToken ?? null,
       registry.baseTokenAddress ?? null,
@@ -75,7 +76,6 @@ export async function saveTokenLaunchInfo(registry) {
 
 /**
  * Load token registry info
- * Same output shape as JSON version
  */
 export async function loadTokenLaunchInfo(tokenAddress) {
   if (!tokenAddress) return null;
@@ -123,8 +123,8 @@ export async function loadTokenLaunchInfo(tokenAddress) {
 }
 
 /**
- * Update token status
- * status: TRADING_ACTIVE | DEAD | RUG | IGNORED
+ * Update token status only
+ * Safe for migration / rug / dead
  */
 export async function updateTokenStatus(tokenAddress, status) {
   if (!tokenAddress || !status) return;
@@ -144,7 +144,29 @@ export async function updateTokenStatus(tokenAddress, status) {
 }
 
 /**
- * Check if token already exists
+ * Mark token as migrated (four.meme AddLiquidity)
+ */
+export async function markTokenMigrated(tokenAddress) {
+  if (!tokenAddress) return;
+
+  await pool.query(
+    `
+    UPDATE tokens
+    SET
+      status='MIGRATED',
+      launch_source='MIGRATION',
+      updated_at=$1
+    WHERE token_address=$2
+    `,
+    [
+      now(),
+      tokenAddress.toLowerCase()
+    ]
+  );
+}
+
+/**
+ * Check if token exists
  */
 export async function tokenExists(tokenAddress) {
   if (!tokenAddress) return false;
@@ -164,7 +186,6 @@ export async function tokenExists(tokenAddress) {
 
 /**
  * Get all tracked tokens
- * Same output as JSON version: array of token addresses
  */
 export async function getAllTokens() {
   const { rows } = await pool.query(
