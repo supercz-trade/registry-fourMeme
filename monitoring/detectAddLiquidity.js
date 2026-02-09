@@ -1,16 +1,21 @@
-// monitoring/detectBuySell.js
-// FINAL — TRADE EVENT PRODUCER (ONCHAIN, ENGINE-FIRST)
+// monitoring/detectAddLiquidity.js
+// [MODIFIED]
+// ADD LIQUIDITY — four.meme Token Manager
+// MethodID: 0xe3412e3d
+// Emits TRADE-like event (SELL) + isMigration flag
+// Fully compatible with transaction / holder / candle pipeline
 
 import { ethers } from "ethers";
 import { getPairPriceUSD } from "../price/pairPriceCache.js";
-import { resolveBondingPrice } from "../services/helper.js";
 
+const ADD_LIQUIDITY_SELECTOR = "0xe3412e3d";
 const TRANSFER_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
 const TOKEN_DECIMALS = 18;
 const TOTAL_SUPPLY = 1_000_000_000;
 
+// SAME whitelist philosophy as detectBuySell
 const PAIR_WHITELIST = {
   "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d": { symbol: "USD1", decimals: 18, stable: true },
   "0x55d398326f99059ff775485246999027b3197955": { symbol: "USDT", decimals: 18, stable: true },
@@ -23,7 +28,12 @@ function addrFromTopic(topic) {
   return "0x" + topic.slice(26);
 }
 
-export async function detectBuySell({
+function normalizeBNB(raw) {
+  if (raw < 0.011) return raw * 0.99;
+  return raw * 0.99;
+}
+
+export function detectAddLiquidity({
   tx,
   receipt,
   tokenAddress,
@@ -33,18 +43,22 @@ export async function detectBuySell({
   bnbUSD
 }) {
   const events = [];
-  if (!tx || !receipt) return events;
+  if (!tx || !receipt || !tokenAddress) return events;
+
+  // ===== STRICT SELECTOR CHECK =====
+  if (!tx.data?.startsWith(ADD_LIQUIDITY_SELECTOR)) return events;
+  if (tx.to?.toLowerCase() !== manager.toLowerCase()) return events;
 
   const tokenAddr = tokenAddress.toLowerCase();
   const managerAddr = manager.toLowerCase();
   const creatorAddr = creator?.toLowerCase() ?? null;
 
-  // ================= PAIR SPEND =================
+  // ================= PAIR SPEND DETECTION =================
   let pairSpend = {
     symbol: "BNB",
+    address: null,
     amount: 0,
-    stable: false,
-    address: null
+    stable: false
   };
 
   for (const log of receipt.logs) {
@@ -57,25 +71,41 @@ export async function detectBuySell({
       const meta = PAIR_WHITELIST[addr];
       pairSpend = {
         symbol: meta.symbol,
-        amount: Number(ethers.formatUnits(BigInt(log.data), meta.decimals)),
-        stable: meta.stable,
-        address: addr
+        address: addr,
+        amount: Number(
+          ethers.formatUnits(BigInt(log.data), meta.decimals)
+        ),
+        stable: meta.stable
       };
     }
   }
 
   // ================= SPEND USD =================
   let spendUSD = 0;
+  let baseTokenPriceUSD = null;
 
   if (!pairSpend.address) {
-    const bnbAmount = Number(ethers.formatEther(tx.value));
+    // Native BNB
+    const rawBNB = Number(ethers.formatEther(tx.value));
+    const bnbAmount = normalizeBNB(rawBNB);
+
+    pairSpend.amount = bnbAmount;
     spendUSD = bnbAmount * bnbUSD;
+    baseTokenPriceUSD = bnbUSD;
+
   } else if (pairSpend.stable) {
     spendUSD = pairSpend.amount;
+    baseTokenPriceUSD = 1;
+
   } else {
     const px = getPairPriceUSD(pairSpend.symbol);
-    if (px) spendUSD = pairSpend.amount * px;
+    if (!px) return events;
+
+    spendUSD = pairSpend.amount * px;
+    baseTokenPriceUSD = px;
   }
+
+  if (spendUSD <= 0) return events;
 
   // ================= TOKEN FLOW =================
   for (const log of receipt.logs) {
@@ -85,56 +115,44 @@ export async function detectBuySell({
     const from = addrFromTopic(log.topics[1]).toLowerCase();
     const to = addrFromTopic(log.topics[2]).toLowerCase();
 
+    // liquidity = manager -> pair
+    if (from !== managerAddr) continue;
+
     const tokenAmount = Number(
       ethers.formatUnits(BigInt(log.data), TOKEN_DECIMALS)
     );
+
     if (tokenAmount <= 0) continue;
 
-    const side =
-      from === managerAddr ? "BUY" :
-      to === managerAddr ? "SELL" : null;
-
-    if (!side) continue;
-
-    // ================= PRICE RESOLUTION =================
-    let priceUSD = null;
-    let marketcapUSD = null;
-    let priceSource = null;
-
-    // PRIORITY 1: PAIR (BUY only)
-    if (side === "BUY" && spendUSD > 0) {
-      priceUSD = spendUSD / tokenAmount;
-      marketcapUSD = priceUSD * TOTAL_SUPPLY;
-      priceSource = "PAIR";
-    }
-
-    // PRIORITY 2: HELPER (BUY & SELL if spendUSD === 0)
-    if (priceUSD === null && spendUSD === 0) {
-      const helper = await resolveBondingPrice(tokenAddr, bnbUSD);
-
-      if (helper && !helper.liquidityAdded) {
-        priceUSD = helper.priceUSD;
-        marketcapUSD = helper.marketcapUSD;
-        priceSource = helper.source; // HELPER3
-      }
-    }
+    const priceUSD = spendUSD / tokenAmount;
+    const marketcapUSD = priceUSD * TOTAL_SUPPLY;
 
     events.push({
       type: "TRADE",
-      side,
+      side: "SELL",
+
       txHash: tx.hash,
       tokenAddress: tokenAddr,
-      wallet: side === "BUY" ? to : from,
-      isDev: creatorAddr
-        ? (side === "BUY" ? to === creatorAddr : from === creatorAddr)
-        : false,
+      wallet: from,
+      isDev: creatorAddr ? from === creatorAddr : false,
+
       tokenAmount,
-      spendAmount: pairSpend.amount || null,
-      spendSymbol: pairSpend.symbol || null,
-      spendUSD: spendUSD || null,
+
+      spendAmount: pairSpend.amount,
+      spendSymbol: pairSpend.symbol,
+      spendUSD,
+
+      baseTokenPriceUSD,
+
       priceUSD,
       marketcapAtTxUSD: marketcapUSD,
-      priceSource,
+
+      // ===== ADDITIONAL FLAGS =====
+      isMigration: true,
+      liquidityEvent: true,
+
+      pairAddress: to,
+
       time: blockTime
     });
   }

@@ -1,0 +1,45 @@
+[
+  {
+    "name": "_ga_0XM0LYXGC8",
+    "value": "GS2.1.s1770636992$o1$g0$t1770636992$j60$l0$h0",
+    "domain": ".gmgn.ai",
+    "path": "/",
+    "expires": 1805196992.911419,
+    "size": 59,
+    "httpOnly": false,
+    "secure": false,
+    "session": false,
+    "priority": "Medium",
+    "sameParty": false,
+    "sourceScheme": "Secure"
+  },
+  {
+    "name": "_ga",
+    "value": "GA1.1.1861070580.1770636993",
+    "domain": ".gmgn.ai",
+    "path": "/",
+    "expires": 1805196992.879146,
+    "size": 30,
+    "httpOnly": false,
+    "secure": false,
+    "session": false,
+    "priority": "Medium",
+    "sameParty": false,
+    "sourceScheme": "Secure"
+  },
+  {
+    "name": "__cf_bm",
+    "value": "vGSa0iBYLnAFxiyIL8nQL8odZpSIzPoAk63WYV8q0c0-1770636982-1.0.1.1-28IZ93WH05arpFZQGeJABzHqw9AZuqOOlibwczML7q1UVlXABsy4TXXHMUnOSJTUvhjViS_slaXw_od7fM.xi5xl4s.AUMt0mr55fiTtets",
+    "domain": ".gmgn.ai",
+    "path": "/",
+    "expires": 1770638783.241503,
+    "size": 177,
+    "httpOnly": true,
+    "secure": true,
+    "session": false,
+    "sameSite": "None",
+    "priority": "Medium",
+    "sameParty": false,
+    "sourceScheme": "Secure"
+  }
+]
