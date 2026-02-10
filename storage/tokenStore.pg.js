@@ -1,7 +1,6 @@
 // storage/tokenStore.pg.js
 // FINAL — SuperCZ Token Registry (Postgres)
-// Supports native launch + migration
-// Engine-first, no UI assumption
+// Engine-first, lifecycle-aware
 
 import { pool } from "../db/postgres.js";
 
@@ -27,6 +26,7 @@ export async function saveTokenLaunchInfo(registry) {
       launch_tx_hash,
       launch_time,
       launch_source,
+      source_platform, -- [NEW]
 
       base_token,
       base_token_address,
@@ -42,10 +42,10 @@ export async function saveTokenLaunchInfo(registry) {
     )
     VALUES (
       $1,$2,$3,$4,
-      $5,$6,$7,
-      $8,$9,$10,
-      $11,$12,$13,$14,
-      $15,$16
+      $5,$6,$7,$8,
+      $9,$10,$11,
+      $12,$13,$14,$15,
+      $16,$17
     )
     ON CONFLICT (token_address) DO NOTHING
     `,
@@ -58,6 +58,7 @@ export async function saveTokenLaunchInfo(registry) {
       registry.launchTxHash ?? null,
       registry.launchTime ?? null,
       registry.launchSource ?? "UNKNOWN",
+      registry.sourcePlatform ?? "unknown", // [NEW]
 
       registry.baseToken ?? null,
       registry.baseTokenAddress ?? null,
@@ -101,9 +102,7 @@ export async function loadTokenLaunchInfo(tokenAddress) {
     launchTxHash: r.launch_tx_hash,
     launchTime: r.launch_time,
     launchSource: r.launch_source,
-
-    registryMode: "ONCHAIN",
-    registryFrom: "internal",
+    sourcePlatform: r.source_platform, // [NEW]
 
     baseToken: r.base_token,
     baseTokenAddress: r.base_token_address,
@@ -118,13 +117,13 @@ export async function loadTokenLaunchInfo(tokenAddress) {
 
     status: r.status,
     createdAt: r.created_at,
-    updatedAt: r.updated_at ?? null
+    updatedAt: r.updated_at ?? null,
+    migratedAt: r.migrated_at ?? null // [NEW]
   };
 }
 
 /**
  * Update token status only
- * Safe for migration / rug / dead
  */
 export async function updateTokenStatus(tokenAddress, status) {
   if (!tokenAddress || !status) return;
@@ -144,7 +143,7 @@ export async function updateTokenStatus(tokenAddress, status) {
 }
 
 /**
- * Mark token as migrated (four.meme AddLiquidity)
+ * Mark token as migrated
  */
 export async function markTokenMigrated(tokenAddress) {
   if (!tokenAddress) return;
@@ -155,6 +154,7 @@ export async function markTokenMigrated(tokenAddress) {
     SET
       status='MIGRATED',
       launch_source='MIGRATION',
+      migrated_at=$1,
       updated_at=$1
     WHERE token_address=$2
     `,

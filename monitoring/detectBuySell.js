@@ -1,5 +1,5 @@
 // monitoring/detectBuySell.js
-// FINAL — TRADE EVENT PRODUCER (ONCHAIN, ENGINE-FIRST)
+// FINAL — TRADE EVENT PRODUCER (ONCHAIN, ENGINE-FIRST, FIXED)
 
 import { ethers } from "ethers";
 import { getPairPriceUSD } from "../price/pairPriceCache.js";
@@ -10,6 +10,7 @@ const TRANSFER_TOPIC =
 
 const TOKEN_DECIMALS = 18;
 const TOTAL_SUPPLY = 1_000_000_000;
+const FOUR_MEME_FEE = 0.01; // 1%
 
 const PAIR_WHITELIST = {
   "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d": { symbol: "USD1", decimals: 18, stable: true },
@@ -92,23 +93,39 @@ export async function detectBuySell({
 
     const side =
       from === managerAddr ? "BUY" :
-      to === managerAddr ? "SELL" : null;
+        to === managerAddr ? "SELL" : null;
 
     if (!side) continue;
 
-    // ================= PRICE RESOLUTION =================
+    // ================= PRICE & SPEND =================
     let priceUSD = null;
     let marketcapUSD = null;
     let priceSource = null;
 
-    // PRIORITY 1: PAIR (BUY only)
+    let spendAmount = null;
+    let spendSymbol = null;
+    let spendType = null;
+    let finalSpendUSD = null;
+
+    // ---------- PAIR BUY ----------
     if (side === "BUY" && spendUSD > 0) {
       priceUSD = spendUSD / tokenAmount;
       marketcapUSD = priceUSD * TOTAL_SUPPLY;
       priceSource = "PAIR";
+
+      if (!pairSpend.address) {
+        spendAmount = Number(ethers.formatEther(tx.value));
+        spendSymbol = "BNB";
+      } else {
+        spendAmount = pairSpend.amount;
+        spendSymbol = pairSpend.symbol;
+      }
+
+      finalSpendUSD = spendUSD;
+      spendType = "EXECUTED";
     }
 
-    // PRIORITY 2: HELPER (BUY & SELL if spendUSD === 0)
+    // ---------- HELPER3 (BUY / SELL when spendUSD === 0) ----------
     if (priceUSD === null && spendUSD === 0) {
       const helper = await resolveBondingPrice(tokenAddr, bnbUSD);
 
@@ -116,6 +133,13 @@ export async function detectBuySell({
         priceUSD = helper.priceUSD;
         marketcapUSD = helper.marketcapUSD;
         priceSource = helper.source; // HELPER3
+
+        finalSpendUSD = priceUSD * tokenAmount * (1 - FOUR_MEME_FEE);
+        spendType = "STATE_AFTER_FEE";
+
+        // ESTIMATED BASE (BNB)
+        spendAmount = finalSpendUSD / bnbUSD; // USD -> BNB (BENAR)
+        spendSymbol = "BNB";
       }
     }
 
@@ -128,13 +152,20 @@ export async function detectBuySell({
       isDev: creatorAddr
         ? (side === "BUY" ? to === creatorAddr : from === creatorAddr)
         : false,
+
       tokenAmount,
-      spendAmount: pairSpend.amount || null,
-      spendSymbol: pairSpend.symbol || null,
-      spendUSD: spendUSD || null,
+
+      // ===== SPEND =====
+      spendAmount,
+      spendSymbol,
+      spendUSD: finalSpendUSD,
+      spendType,
+
+      // ===== PRICE =====
       priceUSD,
       marketcapAtTxUSD: marketcapUSD,
       priceSource,
+
       time: blockTime
     });
   }

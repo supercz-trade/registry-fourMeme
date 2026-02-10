@@ -150,6 +150,8 @@ export async function handleCreateToken({
   symbol,
   creator,
 
+  TOTAL_SUPPLY,
+
   launchTxHash: tx.hash,
   launchTime: block.timestamp,
   launchSource: "four_meme",

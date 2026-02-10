@@ -57,6 +57,8 @@ export async function fetchTokenMeta(tokenAddress) {
     },
 
     status: "TRADING_ACTIVE",
-    createdAt: Date.now()
+    createdAt: d.createDate
+      ? Math.floor(Number(d.createDate) / 1000)
+      : Math.floor(Number(d.launchTime) / 1000)
   };
 }

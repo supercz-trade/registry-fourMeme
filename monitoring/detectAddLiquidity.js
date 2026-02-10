@@ -85,7 +85,6 @@ export function detectAddLiquidity({
   let baseTokenPriceUSD = null;
 
   if (!pairSpend.address) {
-    // Native BNB
     const rawBNB = Number(ethers.formatEther(tx.value));
     const bnbAmount = normalizeBNB(rawBNB);
 
@@ -129,7 +128,7 @@ export function detectAddLiquidity({
 
     events.push({
       type: "TRADE",
-      side: "SELL",
+      side: "ADD LIQUIDITY",
 
       txHash: tx.hash,
       tokenAddress: tokenAddr,
@@ -150,6 +149,10 @@ export function detectAddLiquidity({
       // ===== ADDITIONAL FLAGS =====
       isMigration: true,
       liquidityEvent: true,
+
+      // [NEW] lifecycle fields
+      migratedAt: blockTime,        // epoch sec, chain-derived
+      sourcePlatform: "MIGRATION",    // lifecycle event
 
       pairAddress: to,
 

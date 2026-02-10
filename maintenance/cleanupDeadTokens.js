@@ -13,6 +13,7 @@ function now() {
   return Math.floor(Date.now() / 1000);
 }
 
+
 async function countRecentTrades(token) {
   const since = now() - ONE_DAY;
 
@@ -47,17 +48,20 @@ async function getLastMarketcap(token) {
 }
 
 async function markDead(token) {
-  const ts = now();
+  const updatedAt = Math.floor(Date.now() / 1000); // current time (epoch sec)
+
   await pool.query(
     `
     UPDATE tokens
-    SET status = 'DEAD',
-        updated_at = $1
+    SET
+      status = 'DEAD',
+      updated_at = $1
     WHERE token_address = $2
     `,
-    [ts, token]
+    [updatedAt, token.toLowerCase()]
   );
 }
+
 
 export async function cleanupDeadTokens() {
   console.log("[CLEANUP] dead token scan started");

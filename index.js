@@ -42,6 +42,7 @@ if (!process.env.BSC_WSS) {
 const MANAGER = safeLower(process.env.FOUR_MEME_MANAGER);
 const CREATE_TOKEN_SELECTOR = "0x519ebb10";
 
+
 // ================= PROVIDER =================
 const provider = new ethers.WebSocketProvider(process.env.BSC_WSS);
 
@@ -135,13 +136,29 @@ provider.on("block", async (blockNumber) => {
           continue;
         }
 
-        console.log("[CREATE][RESULT]", {
-          token: result.registry.tokenAddress,
-          creator: result.registry.creator,
-          supply: result.registry.totalSupply,
-          genesisPrice: result.genesisTx?.priceUSD,
-          genesisMcap: result.genesisTx?.marketcapAtTxUSD
-        });
+        console.log("[CREATE][EVENT][FULL]", {
+  tokenAddress: result.registry.tokenAddress,
+  creator: result.registry.creator,
+  manager: MANAGER,
+  totalSupply: result.registry.totalSupply,
+
+  // ===== GENESIS TX =====
+  genesis: {
+    txHash: result.genesisTx?.txHash,
+    wallet: result.genesisTx?.wallet,
+    tokenAmount: result.genesisTx?.tokenAmount,
+
+    spendAmount: result.genesisTx?.spendAmount,
+    spendSymbol: result.genesisTx?.spendSymbol,
+    spendUSD: result.genesisTx?.spendUSD,
+
+    priceUSD: result.genesisTx?.priceUSD,
+    marketcapUSD: result.genesisTx?.marketcapAtTxUSD,
+    priceSource: result.genesisTx?.priceSource,
+    time: result.genesisTx?.time
+  }
+});
+
 
         await saveTokenLaunchInfo({
           ...result.registry,
@@ -209,7 +226,29 @@ provider.on("block", async (blockNumber) => {
     });
 
     if (liqEvents.length) {
-      console.log("[MIGRATION][EVENT]", liqEvents[0]);
+      for (const ev of liqEvents) {
+  console.log("[MIGRATION][EVENT][FULL]", {
+    type: ev.type,
+    side: ev.side,
+    txHash: ev.txHash,
+    token: ev.tokenAddress,
+    wallet: ev.wallet,
+    isDev: ev.isDev,
+
+    tokenAmount: ev.tokenAmount,
+
+    spendAmount: ev.spendAmount,
+    spendSymbol: ev.spendSymbol,
+    spendUSD: ev.spendUSD,
+
+    priceUSD: ev.priceUSD,
+    marketcapUSD: ev.marketcapAtTxUSD,
+    priceSource: ev.priceSource,
+
+    time: ev.time
+  });
+}
+
 
       await saveTransactions(tokenAddress, liqEvents);
       await markTokenMigrated(tokenAddress);
@@ -234,15 +273,30 @@ provider.on("block", async (blockNumber) => {
     if (!tradeEvents.length) continue;
 
     for (const ev of tradeEvents) {
-      console.log("[TRADE][EVENT]", {
-        side: ev.side,
-        wallet: ev.wallet,
-        tokenAmount: ev.tokenAmount,
-        price: ev.priceUSD,
-        mcap: ev.marketcapAtTxUSD,
-        src: ev.priceSource
-      });
-    }
+  console.log("[TRADE][EVENT][FULL]", {
+    type: ev.type,
+    side: ev.side,
+    txHash: ev.txHash,
+    token: ev.tokenAddress,
+    wallet: ev.wallet,
+    isDev: ev.isDev,
+
+    tokenAmount: ev.tokenAmount,
+
+    // ===== SPEND =====
+    spendAmount: ev.spendAmount,
+    spendSymbol: ev.spendSymbol,
+    spendUSD: ev.spendUSD,
+
+    // ===== PRICE =====
+    priceUSD: ev.priceUSD,
+    marketcapUSD: ev.marketcapAtTxUSD,
+    priceSource: ev.priceSource,
+
+    time: ev.time
+  });
+}
+
 
     await saveTransactions(tokenAddress, tradeEvents);
 
