@@ -1,5 +1,6 @@
 // maintenance/enrichQualifiedToken.js
-// FINAL — enrich metadata for qualified tokens only
+// FINAL — enrich metadata for qualified tokens (SET-BASED CANDIDATE SELECTION)
+// Logs: token_address || updated_fields
 
 import { pool } from "../db/postgres.js";
 import { fetchTokenMeta } from "../services/fetchTokenMeta_api.js";
@@ -21,10 +22,10 @@ async function updateMetadata(token, meta) {
     WHERE token_address = $6
     `,
     [
-      meta.image || null,
-      meta.website || null,
-      meta.twitter || null,
-      meta.telegram || null,
+      meta.image ?? null,
+      meta.website ?? null,
+      meta.twitter ?? null,
+      meta.telegram ?? null,
       now(),
       token
     ]
@@ -34,9 +35,12 @@ async function updateMetadata(token, meta) {
 export async function enrichQualifiedTokens() {
   console.log("[ENRICH] qualified token scan started");
 
+  // =========================
+  // SET-BASED CANDIDATE QUERY
+  // =========================
   const { rows: tokens } = await pool.query(
     `
-    SELECT token_address, image, website, twitter, telegram
+    SELECT token_address
     FROM tokens
     WHERE is_qualified = true
       AND (
@@ -48,8 +52,18 @@ export async function enrichQualifiedTokens() {
     `
   );
 
+  if (tokens.length === 0) {
+    console.log("[ENRICH] no candidates");
+    return;
+  }
+
+  console.log(`[ENRICH] candidates=${tokens.length}`);
+
   let enriched = 0;
 
+  // =========================
+  // API-BOUND LOOP (UNAVOIDABLE)
+  // =========================
   for (const t of tokens) {
     const token = t.token_address;
 
@@ -63,23 +77,30 @@ export async function enrichQualifiedTokens() {
     if (!meta?.metadata) continue;
 
     const m = meta.metadata;
-    if (!m.image && !m.website && !m.twitter && !m.telegram) continue;
 
-    await updateMetadata(token, {
+    const payload = {
       image: m.image && m.image !== "default" ? m.image : null,
-      website: m.website,
-      twitter: m.twitter,
-      telegram: m.telegram
-    });
+      website: m.website || null,
+      twitter: m.twitter || null,
+      telegram: m.telegram || null
+    };
 
+    if (!payload.image && !payload.website && !payload.twitter && !payload.telegram) {
+      continue;
+    }
+
+    await updateMetadata(token, payload);
     enriched++;
 
+    // =========================
+    // DETAILED LOGGING
+    // =========================
     console.log(
       `[ENRICHED] ${token}` +
-      ` | img=${!!m.image}` +
-      ` | web=${!!m.website}` +
-      ` | tw=${!!m.twitter}` +
-      ` | tg=${!!m.telegram}`
+      ` || img=${!!payload.image}` +
+      ` || web=${!!payload.website}` +
+      ` || tw=${!!payload.twitter}` +
+      ` || tg=${!!payload.telegram}`
     );
   }
 

@@ -1,58 +1,70 @@
 // price/pairPriceCache.js
-// CoinGecko price cache (rate-limit safe, periodic)
+// Binance-only price cache (rate-limit safe, periodic)
 
 import fetch from "node-fetch";
 
 // ================= CONFIG =================
-// CoinGecko IDs (isi sesuai pair whitelist kamu)
-const COINGECKO_IDS = {
-  CAKE: "pancakeswap-token",
-  ASTER: "aster",          // pastikan ID benar
-  U: "u-token"             // contoh, sesuaikan
+
+// Binance symbol mapping (pastikan sesuai pair USDT)
+const BINANCE_SYMBOLS = {
+  CAKE: "CAKEUSDT",
+  ASTER: "ASTERUSDT",
 };
 
 // update interval (seconds)
 const UPDATE_INTERVAL = 90;
 
 // ================= STATE =================
-const PRICE_CACHE = new Map(); // symbol -> { usd, updatedAt }
+const PRICE_CACHE = new Map(); // symbol -> { usd, updatedAt, source }
 let lastUpdate = 0;
 
 // ================= CORE =================
-async function fetchPrices() {
-  const symbols = Object.keys(COINGECKO_IDS);
-  if (symbols.length === 0) return;
 
-  const ids = symbols.map(s => COINGECKO_IDS[s]).join(",");
-  const url =
-    `https://api.coingecko.com/api/v3/simple/price` +
-    `?ids=${ids}&vs_currencies=usd`;
+// [RENAMED] fetchFromBinance → fetchPriceFromBinance
+async function fetchPriceFromBinance(symbol) {
+  const pair = BINANCE_SYMBOLS[symbol];
+  if (!pair) return null;
+
+  const url = `https://api.binance.com/api/v3/ticker/price?symbol=${pair}`;
 
   try {
     const res = await fetch(url, { timeout: 10_000 });
-    if (!res.ok) return;
-
+    if (!res.ok) return null;
     const json = await res.json();
-    const now = Math.floor(Date.now() / 1000);
-
-    for (const [symbol, id] of Object.entries(COINGECKO_IDS)) {
-      const price = json?.[id]?.usd;
-      if (typeof price === "number") {
-        PRICE_CACHE.set(symbol, { usd: price, updatedAt: now });
-      }
-    }
-
-    lastUpdate = now;
+    const price = parseFloat(json?.price);
+    return Number.isFinite(price) ? price : null;
   } catch {
-    // silent fail, keep last cache
+    return null;
   }
 }
 
+// [RENAMED] fetchPrices → updateAllPrices
+async function updateAllPrices() {
+  const symbols = Object.keys(BINANCE_SYMBOLS);
+  if (symbols.length === 0) return;
+
+  const now = Math.floor(Date.now() / 1000);
+
+  for (const symbol of symbols) {
+    const price = await fetchPriceFromBinance(symbol);
+
+    if (price !== null) {
+      PRICE_CACHE.set(symbol, {
+        usd: price,
+        updatedAt: now,
+        source: "BINANCE"
+      });
+    }
+  }
+
+  lastUpdate = now;
+}
+
 // ================= PUBLIC API =================
+
 export function startPairPriceCache() {
-  // initial fetch
-  fetchPrices();
-  setInterval(fetchPrices, UPDATE_INTERVAL * 1000);
+  updateAllPrices();
+  setInterval(updateAllPrices, UPDATE_INTERVAL * 1000);
 }
 
 export function getPairPriceUSD(symbol) {

@@ -1,5 +1,6 @@
 // maintenance/qualifyToken.js
-// FINAL — qualify tokens based on activity & quality
+// FINAL — qualify tokens based on activity & quality (SET-BASED CORE)
+// Logs: token_address || tx_count || max_mcap || holders
 
 import { pool } from "../db/postgres.js";
 import { getHolderCount } from "../storage/holderStore.pg.js";
@@ -12,27 +13,9 @@ function now() {
   return Math.floor(Date.now() / 1000);
 }
 
-async function getTradeStats(token) {
-  const { rows } = await pool.query(
-    `
-    SELECT
-      COUNT(*) AS tx_count,
-      MAX(marketcap_at_tx_usd) AS max_mcap
-    FROM transactions
-    WHERE token_address = $1
-      AND type = 'TRADE'
-    `,
-    [token]
-  );
-
-  return {
-    txCount: Number(rows[0]?.tx_count || 0),
-    maxMarketcap: Number(rows[0]?.max_mcap || 0)
-  };
-}
-
 async function markQualified(token) {
   const ts = now();
+
   await pool.query(
     `
     UPDATE tokens
@@ -46,26 +29,49 @@ async function markQualified(token) {
   );
 }
 
+
 export async function qualifyTokens() {
   console.log("[QUALIFY] scan started");
 
-  const { rows: tokens } = await pool.query(
+  // =========================
+  // SET-BASED TRADE STATS
+  // =========================
+  const { rows: candidates } = await pool.query(
     `
-    SELECT token_address
-    FROM tokens
-    WHERE status IN ('TRADING_ACTIVE','MIGRATED')
-      AND (is_qualified IS NULL OR is_qualified = false)
-    `
+    SELECT
+      t.token_address,
+      COUNT(tx.*) AS tx_count,
+      COALESCE(MAX(tx.marketcap_at_tx_usd), 0) AS max_mcap
+    FROM tokens t
+    JOIN transactions tx
+      ON tx.token_address = t.token_address
+     AND tx.type = 'TRADE'
+    WHERE t.status IN ('TRADING_ACTIVE','MIGRATED')
+      AND (t.is_qualified IS NULL OR t.is_qualified = false)
+    GROUP BY t.token_address
+    HAVING
+      COUNT(tx.*) >= $1
+      AND COALESCE(MAX(tx.marketcap_at_tx_usd), 0) >= $2
+    `,
+    [MIN_TX, MIN_MCAP]
   );
+
+  if (candidates.length === 0) {
+    console.log("[QUALIFY] no candidates");
+    return;
+  }
+
+  console.log(`[QUALIFY] candidates=${candidates.length}`);
 
   let qualified = 0;
 
-  for (const t of tokens) {
-    const token = t.token_address;
-
-    const { txCount, maxMarketcap } = await getTradeStats(token);
-    if (txCount < MIN_TX) continue;
-    if (maxMarketcap < MIN_MCAP) continue;
+  // =========================
+  // HOLDER CHECK (UNAVOIDABLE LOOP)
+  // =========================
+  for (const c of candidates) {
+    const token = c.token_address;
+    const txCount = Number(c.tx_count);
+    const maxMcap = Number(c.max_mcap);
 
     const holders = await getHolderCount(token);
     if (holders < MIN_HOLDERS) continue;
@@ -74,7 +80,10 @@ export async function qualifyTokens() {
     qualified++;
 
     console.log(
-      `[QUALIFIED] ${token} | tx=${txCount} | mcap=${maxMarketcap} | holders=${holders}`
+      `[QUALIFIED] ${token}` +
+      ` || tx=${txCount}` +
+      ` || mcap=${maxMcap}` +
+      ` || holders=${holders}`
     );
   }
 

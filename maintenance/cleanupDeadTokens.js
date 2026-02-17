@@ -1,8 +1,6 @@
 // maintenance/cleanupDeadTokens.js
-// FINAL — cleanup dead / inactive tokens
-// Criteria:
-// - no trade in last 24h
-// - last known mcap < threshold
+// FINAL — cleanup dead / inactive tokens (SET-BASED + DETAILED LOG)
+// Logs: token_address || marketcap || last_tx_time
 
 import { pool } from "../db/postgres.js";
 
@@ -13,83 +11,75 @@ function now() {
   return Math.floor(Date.now() / 1000);
 }
 
-
-async function countRecentTrades(token) {
-  const since = now() - ONE_DAY;
-
-  const { rows } = await pool.query(
-    `
-    SELECT COUNT(*) AS cnt
-    FROM transactions
-    WHERE token_address = $1
-      AND type = 'TRADE'
-      AND time >= $2
-    `,
-    [token, since]
-  );
-
-  return Number(rows[0]?.cnt || 0);
-}
-
-async function getLastMarketcap(token) {
-  const { rows } = await pool.query(
-    `
-    SELECT marketcap_at_tx_usd
-    FROM transactions
-    WHERE token_address = $1
-      AND marketcap_at_tx_usd IS NOT NULL
-    ORDER BY time DESC
-    LIMIT 1
-    `,
-    [token]
-  );
-
-  return rows.length ? Number(rows[0].marketcap_at_tx_usd) : 0;
-}
-
-async function markDead(token) {
-  const updatedAt = Math.floor(Date.now() / 1000); // current time (epoch sec)
-
-  await pool.query(
-    `
-    UPDATE tokens
-    SET
-      status = 'DEAD',
-      updated_at = $1
-    WHERE token_address = $2
-    `,
-    [updatedAt, token.toLowerCase()]
-  );
-}
-
-
 export async function cleanupDeadTokens() {
   console.log("[CLEANUP] dead token scan started");
 
-  const { rows: tokens } = await pool.query(
+  const ts = now();
+  const since = ts - ONE_DAY;
+
+  // =========================
+  // PREVIEW + LOG SOURCE
+  // =========================
+  const preview = await pool.query(
     `
-    SELECT token_address
-    FROM tokens
-    WHERE status NOT IN ('DEAD','RUG','IGNORED')
-    `
+    SELECT
+      t.token_address,
+      COALESCE(MAX(tx.marketcap_at_tx_usd), 0) AS last_mcap,
+      COALESCE(MAX(tx.time), 0) AS last_tx_time
+    FROM tokens t
+    LEFT JOIN transactions tx
+      ON tx.token_address = t.token_address
+     AND tx.type = 'TRADE'
+    WHERE t.status NOT IN ('DEAD','RUG','IGNORED')
+    GROUP BY t.token_address
+    HAVING
+      COALESCE(MAX(tx.time), 0) < $1
+      AND COALESCE(MAX(tx.marketcap_at_tx_usd), 0) < $2
+    `,
+    [since, DEAD_MCAP_USD]
   );
 
-  let dead = 0;
-
-  for (const t of tokens) {
-    const token = t.token_address;
-
-    const trades24h = await countRecentTrades(token);
-    if (trades24h > 0) continue;
-
-    const mcap = await getLastMarketcap(token);
-    if (mcap >= DEAD_MCAP_USD) continue;
-
-    await markDead(token);
-    dead++;
-
-    console.log(`[DEAD] ${token} | mcap=${mcap}`);
+  if (preview.rows.length === 0) {
+    console.log("[CLEANUP] no dead tokens found");
+    return;
   }
 
-  console.log(`[CLEANUP] finished | dead=${dead}`);
+  console.log(`[CLEANUP] candidates=${preview.rows.length}`);
+
+  // =========================
+  // DETAILED LOGGING
+  // =========================
+  for (const r of preview.rows) {
+    console.log(
+      `[DEAD][CANDIDATE] ${r.token_address} || mcap=${Number(r.last_mcap).toFixed(2)} || last_tx=${r.last_tx_time}`
+    );
+  }
+
+  // =========================
+  // SINGLE UPDATE
+  // =========================
+  const res = await pool.query(
+    `
+    UPDATE tokens t
+    SET
+      status = 'DEAD',
+      updated_at = $1
+    FROM (
+      SELECT t2.token_address
+      FROM tokens t2
+      LEFT JOIN transactions tx
+        ON tx.token_address = t2.token_address
+       AND tx.type = 'TRADE'
+      WHERE t2.status NOT IN ('DEAD','RUG','IGNORED')
+      GROUP BY t2.token_address
+      HAVING
+        COALESCE(MAX(tx.time), 0) < $2
+        AND COALESCE(MAX(tx.marketcap_at_tx_usd), 0) < $3
+    ) dead
+    WHERE t.token_address = dead.token_address
+    `,
+    [ts, since, DEAD_MCAP_USD]
+  );
+
+  console.log(`[CLEANUP] finished | dead=${res.rowCount}`);
 }

@@ -1,6 +1,8 @@
 // storage/tokenStore.pg.js
 // FINAL — SuperCZ Token Registry (Postgres)
 // Engine-first, lifecycle-aware
+// [MODIFIED] save extra fields: description, tax, liquidity_type, red_flag,
+// min_buy, max_buy, contract_verified
 
 import { pool } from "../db/postgres.js";
 
@@ -26,7 +28,7 @@ export async function saveTokenLaunchInfo(registry) {
       launch_tx_hash,
       launch_time,
       launch_source,
-      source_platform, -- [NEW]
+      source_platform,
 
       base_token,
       base_token_address,
@@ -37,6 +39,14 @@ export async function saveTokenLaunchInfo(registry) {
       website,
       image,
 
+      description,
+      tax,
+      liquidity_type,
+      red_flag,
+      min_buy,
+      max_buy,
+      contract_verified,
+
       status,
       created_at
     )
@@ -45,7 +55,8 @@ export async function saveTokenLaunchInfo(registry) {
       $5,$6,$7,$8,
       $9,$10,$11,
       $12,$13,$14,$15,
-      $16,$17
+      $16,$17,$18,$19,$20,$21,$22,
+      $23,$24
     )
     ON CONFLICT (token_address) DO NOTHING
     `,
@@ -58,7 +69,7 @@ export async function saveTokenLaunchInfo(registry) {
       registry.launchTxHash ?? null,
       registry.launchTime ?? null,
       registry.launchSource ?? "UNKNOWN",
-      registry.sourcePlatform ?? "unknown", // [NEW]
+      registry.sourcePlatform ?? "unknown",
 
       registry.baseToken ?? null,
       registry.baseTokenAddress ?? null,
@@ -68,6 +79,14 @@ export async function saveTokenLaunchInfo(registry) {
       registry.metadata?.twitter ?? null,
       registry.metadata?.website ?? null,
       registry.metadata?.image ?? "default",
+
+      registry.description ?? null,
+      registry.tax ?? null,
+      registry.liquidityType ?? null,
+      registry.redFlag ?? null,
+      registry.minBuy ?? null,
+      registry.maxBuy ?? null,
+      registry.contractVerified ?? null,
 
       registry.status ?? "TRADING_ACTIVE",
       registry.createdAt ?? now()
@@ -102,7 +121,7 @@ export async function loadTokenLaunchInfo(tokenAddress) {
     launchTxHash: r.launch_tx_hash,
     launchTime: r.launch_time,
     launchSource: r.launch_source,
-    sourcePlatform: r.source_platform, // [NEW]
+    sourcePlatform: r.source_platform,
 
     baseToken: r.base_token,
     baseTokenAddress: r.base_token_address,
@@ -115,10 +134,18 @@ export async function loadTokenLaunchInfo(tokenAddress) {
       image: r.image
     },
 
+    description: r.description,
+    tax: r.tax,
+    liquidityType: r.liquidity_type,
+    redFlag: r.red_flag,
+    minBuy: r.min_buy,
+    maxBuy: r.max_buy,
+    contractVerified: r.contract_verified,
+
     status: r.status,
     createdAt: r.created_at,
     updatedAt: r.updated_at ?? null,
-    migratedAt: r.migrated_at ?? null // [NEW]
+    migratedAt: r.migrated_at ?? null
   };
 }
 
@@ -197,4 +224,60 @@ export async function getAllTokens() {
   );
 
   return rows.map(r => r.token_address);
+}
+
+/**
+ * Flexible update token info (partial update)
+ */
+export async function updateTokenInfo(tokenAddress, updates = {}) {
+  if (!tokenAddress || !updates || Object.keys(updates).length === 0) return;
+
+  const fields = [];
+  const values = [];
+  let idx = 1;
+
+  const map = {
+    name: "name",
+    symbol: "symbol",
+    creator: "creator",
+
+    description: "description",
+    tax: "tax",
+    liquidityType: "liquidity_type",
+    redFlag: "red_flag",
+    minBuy: "min_buy",
+    maxBuy: "max_buy",
+    contractVerified: "contract_verified",
+
+    launchSource: "launch_source",
+    sourcePlatform: "source_platform",
+
+    baseToken: "base_token",
+    baseTokenAddress: "base_token_address",
+    baseTokenType: "base_token_type",
+
+    status: "status"
+  };
+
+  for (const key in updates) {
+    if (!(key in map)) continue;
+    fields.push(`${map[key]}=$${idx}`);
+    values.push(updates[key]);
+    idx++;
+  }
+
+  if (fields.length === 0) return;
+
+  fields.push(`updated_at=$${idx}`);
+  values.push(now());
+  idx++;
+
+  await pool.query(
+    `
+    UPDATE tokens
+    SET ${fields.join(", ")}
+    WHERE token_address=$${idx}
+    `,
+    [...values, tokenAddress.toLowerCase()]
+  );
 }

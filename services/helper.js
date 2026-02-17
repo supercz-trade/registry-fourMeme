@@ -3,7 +3,8 @@
 // READY FOR ENGINE USE
 
 import { ethers } from "ethers";
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: "../.env" });
 
 // ================= CONFIG =================
 const RPC = (process.env.BSC_RPC);

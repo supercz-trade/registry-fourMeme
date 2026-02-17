@@ -1,9 +1,11 @@
 // monitor/createToken.js
 // four.meme mode — GENESIS PRODUCER
 // Outputs: registry, genesisTx, genesisHolder, genesisCandle
+// [MODIFIED] call four.meme API to enrich tax, liquidity, metadata
 
 import { ethers } from "ethers";
 import { getPairPriceUSD } from "../price/pairPriceCache.js";
+import { fetchTokenMeta } from "../services/fetchTokenMeta_api.js";
 
 const TRANSFER_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -11,13 +13,11 @@ const TRANSFER_TOPIC =
 const TOTAL_SUPPLY = 1_000_000_000;
 const TOKEN_DECIMALS = 18;
 
-// ================= TOKEN META ABI =================
 const TOKEN_META_ABI = [
   "function name() view returns (string)",
   "function symbol() view returns (string)"
 ];
 
-// ================= PAIR CONFIG =================
 const PAIR_WHITELIST = {
   "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d": { symbol: "USD1", decimals: 18, stable: true },
   "0x55d398326f99059ff775485246999027b3197955": { symbol: "USDT", decimals: 18, stable: true },
@@ -26,7 +26,6 @@ const PAIR_WHITELIST = {
   "0x000ae314e2a2172a039b26378814c252734f556a": { symbol: "ASTER", decimals: 18, stable: false }
 };
 
-// ================= HELPERS =================
 function normalizeBNB(raw) {
   if (raw < 0.011) return raw * 0.0001;
   return raw * 0.9876;
@@ -36,7 +35,6 @@ function addrFromTopic(topic) {
   return "0x" + topic.slice(26);
 }
 
-// ================= MAIN =================
 export async function handleCreateToken({
   tx,
   receipt,
@@ -68,16 +66,20 @@ export async function handleCreateToken({
 
   if (!tokenAddress || tokenReceived === 0) return null;
 
-  // ================= TOKEN META =================
+  // ================= BASIC TOKEN META (ONCHAIN) =================
   let name = null;
   let symbol = null;
 
   try {
     const token = new ethers.Contract(tokenAddress, TOKEN_META_ABI, provider);
     [name, symbol] = await Promise.all([token.name(), token.symbol()]);
-  } catch {
-    // non-standard token
-  }
+  } catch {}
+
+  // ================= API ENRICH =================
+  let apiMeta = null;
+  try {
+    apiMeta = await fetchTokenMeta(tokenAddress);
+  } catch {}
 
   // ================= PAIR SPEND =================
   let pairSpend = {
@@ -111,7 +113,6 @@ export async function handleCreateToken({
   let baseTokenPriceUSD = null;
 
   if (!pairSpend.address) {
-    // Native BNB
     const rawBNB = Number(ethers.formatEther(tx.value));
     const bnbAmount = normalizeBNB(rawBNB);
 
@@ -120,12 +121,10 @@ export async function handleCreateToken({
     baseTokenPriceUSD = bnbUSD;
 
   } else if (pairSpend.stable) {
-    // Stablecoin
     spendUSD = pairSpend.amount;
     baseTokenPriceUSD = 1;
 
   } else {
-    // Volatile ERC20
     const px = getPairPriceUSD(pairSpend.symbol);
     if (!px) return null;
 
@@ -135,72 +134,70 @@ export async function handleCreateToken({
 
   if (spendUSD <= 0) return null;
 
-  // ================= PRICE & MARKETCAP =================
   const priceUSD = spendUSD / tokenReceived;
   const marketcapUSD = priceUSD * TOTAL_SUPPLY;
-
   const candleTime = Math.floor(block.timestamp / 60) * 60;
 
   // ================= FINAL OUTPUT =================
   return {
-    // ===== REGISTRY =====
     registry: {
-  tokenAddress,
-  name,
-  symbol,
-  creator,
+      tokenAddress,
+      name: apiMeta?.name ?? name,
+      symbol: apiMeta?.symbol ?? symbol,
+      creator,
 
-  TOTAL_SUPPLY,
+      TOTAL_SUPPLY,
 
-  launchTxHash: tx.hash,
-  launchTime: block.timestamp,
-  launchSource: "four_meme",
+      launchTxHash: tx.hash,
+      launchTime: block.timestamp,
+      launchSource: "four_meme",
+      sourcePlatform: "internal_onchain",
 
-  registryMode: "ONCHAIN",
-  registryFrom: "internal",
+      baseToken: pairSpend.symbol,
+      baseTokenAddress: pairSpend.address,
+      baseTokenType: pairSpend.stable ? "stable" : "volatile",
 
-  baseToken: pairSpend.symbol,
-  baseTokenAddress: pairSpend.address,
-  baseTokenType: pairSpend.stable ? "stable" : "volatile",
+      metadata: apiMeta?.metadata ?? {
+        telegram: null,
+        twitter: null,
+        website: null,
+        image: "default"
+      },
 
-  metadata: {
-    telegram: null,
-    twitter: null,
-    website: null,
-    image: "default"
-  },
+      description: apiMeta?.description ?? null,
+      tax: apiMeta?.tax ?? 0,
+      liquidityType: apiMeta?.liquidityType ?? "BURNT",
+      contractVerified: true,
+      redFlag: null,
+      minBuy: null,
+      maxBuy: null,
 
-  status: "TRADING_ACTIVE",
-  createdAt: Date.now()
-},
+      status: "TRADING_ACTIVE",
+      createdAt: block.timestamp
+    },
 
+    genesisTx: {
+      type: "DEV_BUY",
+      side: "BUY",
 
-    // ===== GENESIS TRANSACTION =====
-genesisTx: {
-  type: "DEV_BUY",
-  side: "BUY",
+      txHash: tx.hash,
+      tokenAddress,
+      wallet: creator,
 
-  txHash: tx.hash,
-  tokenAddress,
-  wallet: creator,
+      tokenAmount: tokenReceived,
 
-  tokenAmount: tokenReceived,
+      spendAmount: pairSpend.amount,
+      spendSymbol: pairSpend.symbol,
+      spendUSD,
 
-  spendAmount: pairSpend.amount,
-  spendSymbol: pairSpend.symbol,
-  spendUSD,
+      baseTokenPriceUSD,
 
-  baseTokenPriceUSD,
+      priceUSD,
+      marketcapAtTxUSD: marketcapUSD,
 
-  priceUSD,
-  marketcapAtTxUSD: marketcapUSD,
+      time: candleTime
+    },
 
-  time: candleTime   // 🔴 FIX UTAMA
-},
-
-
-
-    // ===== GENESIS HOLDER =====
     genesisHolder: {
       tokenAddress,
       address: creator,
@@ -211,7 +208,6 @@ genesisTx: {
       source: "genesis"
     },
 
-    // ===== GENESIS CANDLE =====
     genesisCandle: {
       tokenAddress,
       timeframe: "1m",

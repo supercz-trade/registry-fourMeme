@@ -1,71 +1,93 @@
-// test/detectBuySellByTx.js
-// Manual test for detectBuySell using single txHash
+// test/testDetectBuySell.js
+// TEST detectBuySell BY TX HASH
 
-import "dotenv/config";
 import { ethers } from "ethers";
+import "dotenv/config";
 
 import { detectBuySell } from "../monitoring/detectBuySell.js";
-import { startPairPriceCache } from "../price/pairPriceCache.js";
+import { loadTokenLaunchInfo } from "../storage/tokenStore.pg.js";
 import { getBNBPrice } from "../price/bnbPrice.js";
 
-// ================= CONFIG =================
-// GANTI TX HASH DI SINI
-const TX_HASH = "0xf2fd742da165e89945a593464c5104413594b3cace054de91141fd50e6047b0f";
+const safeLower = (v) => (typeof v === "string" ? v.toLowerCase() : null);
 
-// Token info (WAJIB kamu isi manual untuk test)
-const TOKEN_ADDRESS = "0x219bDb86c436c42Ad96334c1e33229b870764444".toLowerCase();
-const CREATOR = "0x29b3bb089340042c93b1562f72e7f32ff0e1b34c".toLowerCase();
-
-// four.meme manager
-const MANAGER = "0x5c952063c7fc8610ffdb798152d69f0b9550762b";
-
-// ================= PROVIDER =================
-// Gunakan HTTP RPC (AMAN untuk testing)
-const provider = new ethers.JsonRpcProvider(
-  process.env.BSC_RPC || "https://bsc-dataseed.binance.org"
-);
-
-// ================= INIT =================
-startPairPriceCache();
-
-const bnbUSD = await getBNBPrice();
-console.log("[INIT] BNB USD =", bnbUSD);
-
-// ================= FETCH TX =================
-const tx = await provider.getTransaction(TX_HASH);
-if (!tx) {
-  console.error("TX not found");
-  process.exit(1);
+if (!process.env.BSC_RPC) {
+  throw new Error("BSC_RPC env missing");
 }
 
-const receipt = await provider.getTransactionReceipt(TX_HASH);
-const block = await provider.getBlock(tx.blockNumber);
-
-if (!receipt || !block) {
-  console.error("Receipt / Block not found");
-  process.exit(1);
+if (!process.env.FOUR_MEME_MANAGER) {
+  throw new Error("FOUR_MEME_MANAGER env missing");
 }
 
-// ================= RUN DETECTOR =================
-const events = detectBuySell({
-  tx,
-  receipt,
-  tokenAddress: TOKEN_ADDRESS,
-  manager: MANAGER,
-  creator: CREATOR,
-  blockTime: block.timestamp,
-  bnbUSD
-});
+const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC);
 
-// ================= RESULT =================
-console.log("\n=== BUY / SELL EVENTS ===");
-
-if (events.length === 0) {
-  console.log("No BUY / SELL detected in this tx");
-} else {
-  for (const e of events) {
-    console.dir(e, { depth: null });
+async function main() {
+  const txHash = process.argv[2];
+  if (!txHash) {
+    console.log("Usage: node testDetectBuySell.js <txHash>");
+    process.exit(1);
   }
+
+  console.log("[TEST] TX:", txHash);
+
+  const tx = await provider.getTransaction(txHash);
+  if (!tx) {
+    console.log("[ERROR] TX not found");
+    return;
+  }
+
+  const receipt = await provider.getTransactionReceipt(txHash);
+  if (!receipt) {
+    console.log("[ERROR] Receipt not found");
+    return;
+  }
+
+  const block = await provider.getBlock(tx.blockNumber);
+  const candleTime = Math.floor(block.timestamp / 60) * 60;
+
+  const BNB_USD = await getBNBPrice();
+  console.log("[PRICE] BNB =", BNB_USD);
+
+  // detect token from first transfer
+  const TRANSFER_TOPIC =
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+  let tokenAddress = null;
+  for (const log of receipt.logs) {
+    if (log.topics?.[0] === TRANSFER_TOPIC && log.topics.length === 3) {
+      tokenAddress = log.address.toLowerCase();
+      break;
+    }
+  }
+
+  if (!tokenAddress) {
+    console.log("[INFO] No ERC20 transfer found");
+    return;
+  }
+
+  console.log("[INFO] Token detected:", tokenAddress);
+
+  let tokenInfo = await loadTokenLaunchInfo(tokenAddress);
+
+  if (!tokenInfo) {
+    console.log("[WARN] Token not in DB → creator set null");
+  }
+
+  const events = await detectBuySell({
+    tx,
+    receipt,
+    tokenAddress,
+    manager: safeLower(process.env.FOUR_MEME_MANAGER),
+    creator: tokenInfo?.creator ?? null,
+    blockTime: candleTime,
+    bnbUSD: BNB_USD
+  });
+
+  console.log("=================================");
+  console.log("[RESULT] EVENTS:", events.length);
+  console.dir(events, { depth: null });
+  console.log("=================================");
 }
 
-process.exit(0);
+main().catch((err) => {
+  console.error("[FATAL]", err);
+});

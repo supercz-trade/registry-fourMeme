@@ -102,3 +102,17 @@ export async function getLatestTransactions(tokenAddress, limit = 50) {
   );
   return rows;
 }
+
+export async function getTransactionsByTx(txHash) {
+  if (!txHash) return [];
+
+  const { rows } = await pool.query(
+    `
+    SELECT *
+    FROM transactions
+    WHERE tx_hash=$1
+    ORDER BY time ASC
+    `,
+    [txHash]
+  );
+}
